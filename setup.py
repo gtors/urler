@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
+from setuptools import setup
 from urler import __version__
-from setuptools import setup, find_packages
 
 setup(
     name='urler',
@@ -9,9 +9,9 @@ setup(
     description='A class for URL-building/parsing/manipulation',
     long_description='',
     url='https://github.com/gtors/urler',
-    py_modules=['urler'],
     license='MIT',
     platforms=['any'],
+    packages=['urler'],
     author='Andrey Torsunov',
     author_email='andrey.torsunov@gmail.com',
     classifiers=[
@@ -24,5 +24,6 @@ setup(
     ],
     install_requires=[
         'publicsuffixlist'
-    ]
+    ],
+    zip_safe=True
 )

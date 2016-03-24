@@ -1,63 +1,104 @@
 #!/usr/bin/env python
 
+"""
+A module for URL-building/parsing/manipulating.
+"""
+
 import re
 import codecs
-import urllib
+import doctest
+import urllib.parse
+
 from copy import copy
 from operator import attrgetter
-from collections import Iterable
+from collections import Iterable, OrderedDict
 
 # For publicsuffix utilities
 from publicsuffixlist import PublicSuffixList
 
-psl = PublicSuffixList()
+__all__ = ('URL',)
+
+PSL = PublicSuffixList()
 
 IDNA = codecs.lookup('idna')
 
 DEFAULT_PORTS = {
-    'ftp': 21,
-    'ssh': 22,
-    'http': 80,
-    'https': 443
+    'ftp': '21',
+    'ssh': '22',
+    'http': '80',
+    'https': '443'
 }
 
 
 class _Params:
 
+    __slots__ = ('_params',)
+
     def __init__(self, params):
+        self._params = OrderedDict(urllib.parse.parse_qs(params))
+
+    def __eq__(self, other):
+        if isinstance(other, str):
+            _other = self.__class__(other)
+        elif isinstance(other, self.__class__):
+            _other = copy(other)
+        else:
+            return False
+
+        _self = copy(self)
+        _self.sort()
+        _other.sort()
+
+        return _self.to_str() == _other.to_str()
+
+    def __copy__(self):
+        return self.__class__(self.to_str())
+
+    def filter_by(self, predicate):
+        params = OrderedDict()
+        for name, values in self._params.items():
+            for value in values:
+                if predicate(name, value):
+                    params.setdefault(name, []).append(value)
         self._params = params
 
-    def filter_by(predicate):
-        self._params = [p for p in self._params if predicate(*p)]
+    def sort(self, key=None):
+        self._params = OrderedDict(sorted(self._params.items(), key=key))
 
-    def sort(self, _cmp=None):
-        self._params.sort(cmp=_cmp)
+    def get(self, name):
+        return self._params[name]
 
     def add(self, name, value):
         if self._is_collection(value):
-            for v in value:
-                self._params.append((name, v))
+            self._params.setdefault(name, []).extend(value)
         else:
-            self._params.append((name, value))
+            self._params.setdefault(name, []).append(value)
 
     def set(self, name, value):
-        remove_by(lambda k, _: k == name)
         if self._is_collection(value):
-            for v in value:
-                self._params.append((name, v))
+            self._params[name] = list(value)
         else:
-            self._params.append((name, value))
+            self._params[name] = [value]
 
     def remove(self, name, value=None):
-        if self_is_collection(name):
-            self.remove_by(lambda k, _: k in name and (value is None or v == value)
+        if self._is_collection(name) and self._is_collection(value):
+            self.remove_by(lambda k, v: k in name and v in value)
+        elif self._is_collection(name) and value is not None:
+            self.remove_by(lambda k, v: k in name and v == value)
+        elif self._is_collection(name):
+            self.remove_by(lambda k, _: k in name)
         elif self._is_collection(value):
-            self.remove_by(lambda k, v: k == name and (value is None or v in value))
+            self.remove_by(lambda k, v: k == name and v in value)
+        elif value is not None:
+            self.remove_by(lambda k, v: k == name and v == value)
         else:
-            self.remove_by(lambda k, v: k == name and (value is None or v == value))
+            self.remove_by(lambda k, _: k == name)
 
-    def remove_by(predicate):
-        self._params = [p for p in self._params if not predicate(*p)]
+    def remove_by(self, predicate):
+        self.filter_by(lambda *args: not predicate(*args))
+
+    def to_str(self):
+        return urllib.parse.urlencode(self._params, doseq=True, quote_via=lambda a, *_: a)
 
     @staticmethod
     def _is_collection(value):
@@ -65,7 +106,9 @@ class _Params:
 
 
 class URL:
-
+    """
+    A class for URL-building/parsing/manipulating.
+    """
     __slots__ = (
         'scheme', 'username', 'password', 'host', 'port',
         '_inferred_port', 'path', 'params', 'query',
@@ -94,46 +137,46 @@ class URL:
         """
         parsed = urllib.parse.urlparse(url)
 
+        self.scheme = parsed.scheme or ''
         self.host = parsed.hostname or ''
-        self.port = parsed.port or ''
-        self.path = parsed.path or ''
-        self.params = parsed.params or ''
-        self.query = parsed.query or ''
+        self.port = str(parsed.port or '')
+        self.path = parsed.path
+        self.params = _Params(parsed.params or '')
+        self.query = _Params(parsed.query or '')
         self.fragment = parsed.fragment or ''
         self.username = parsed.username or ''
-        self.password = prsed.password or ''
+        self.password = parsed.password or ''
 
         # For future comparsion
-        self._inferred_port = port or scheme and DEFAULT_PORTS.get(scheme)
+        self._inferred_port = self.port or self.scheme and DEFAULT_PORTS.get(self.scheme)
 
         if kwargs:
             self.update(**kwargs)
 
     def update(self, *, scheme=None, host=None, port=None, path=None,
-            params=None, query=None, fragment=None, username=None, 
-            password=None):
+               params=None, query=None, fragment=None, username=None,
+               password=None):
         """
-        >>> URL('http://example.com').update(
-        >>>    port='8080'
-        >>>    path='/a/b/c'
-        >>> ).to_str()
+        >>> URL('http://example.com').update(port='8080', path='/a/b/c').to_str()
         'http://example.com:8080/a/b/c'
         """
-        if username:
+        if username is not None:
             self.username = username
-        if password:
+        if password is not None:
             self.password = password
-        if scheme:
+        if scheme is not None:
             self.scheme = scheme
-        if host:
+        if host is not None:
             self.host = host
-        if port:
-            self.port = port
-        if path:
+        if port is not None:
+            self.port = str(port)
+        if path is not None:
             self.path = path
-        if query:
-            self.query = query
-        if fragment:
+        if query is not None:
+            self.query = _Params(query)
+        if params is not None:
+            self.params = _Params(params)
+        if fragment is not None:
             self.fragment = fragment
         return self
 
@@ -146,21 +189,37 @@ class URL:
         True
         """
         if isinstance(other, str):
-            _other = self.parse(other, encoding)
-        else:
+            _other = self.__class__(other)
+        elif isinstance(other, self.__class__):
             _other = copy(other)
+        else:
+            return False
 
-        _self = copy(self)
-        _self.canonical().defrag().abspath().escape().with_punycode()
-        _other.canonical().defrag().abspath().escape().with_punycode()
+        _self = self.__generalize(copy(self))
+        _other = self.__generalize(_other)
 
-        attrs = map(attrgetter(
-            'userinfo',
-            'scheme', 'host', '_inferred_port',
-            'path', 'params', 'query',
-            'fragment'))
+        attrs = [
+            attrgetter(attr)
+            for attr in (
+                'username', 'password',
+                'scheme', 'host', '_inferred_port',
+                'path', 'params', 'query',
+                'fragment'
+            )
+        ]
 
         return all(attr(_self) == attr(_other) for attr in attrs)
+
+    @staticmethod
+    def __generalize(url):
+        url.sort_query()
+        url.sort_params()
+        url.remove_frag()
+        url.add_path('/')
+        url.abspath()
+        url.escape()
+        url.punycode()
+        return url
 
     def __ne__(self, other):
         return not self.__eq__(other)
@@ -169,7 +228,7 @@ class URL:
         return self.to_str()
 
     def __repr__(self):
-        return '<url.URL object "{}">'.format(self.to_str())
+        return '<urler.URL object "{}">'.format(self.to_str())
 
     # Scheme methods
     # ------------------------------------------------------------------------
@@ -201,18 +260,18 @@ class URL:
         self.username = name
         return self
 
-    def set_password(self, pass):
+    def set_password(self, passwd):
         """
         >>> URL('http://name@example.com').set_password('pass').to_str()
         'http://name:pass@example.com'
         """
-        self.password = pass
+        self.password = passwd
         return self
 
     def remove_password(self):
         """
-        >>> URL('http://name@example.com').remove_password().to_str()
-        'http://name:pass@example.com'
+        >>> URL('http://name:pass@example.com').remove_password().to_str()
+        'http://name@example.com'
         """
         self.password = ''
         return self
@@ -280,7 +339,7 @@ class URL:
     def set_pld(self, pld):
         """
         >>> URL('http://test.example.com').set_pld('a.net').to_str()
-        'http://test.a.com'
+        'http://test.a.net'
         """
         self.host = '.'.join((self.subdomain(), pld.strip('.')))
         return self
@@ -297,7 +356,7 @@ class URL:
         """
         Return the hostname of the url.
 
-        >>> URL('ru.example.com').hostname()
+        >>> URL('http://ru.example.com').hostname()
         'ru.example.com'
         """
         return self.host
@@ -306,7 +365,7 @@ class URL:
         """
         Return the subdomain of the url.
 
-        >>> URL('ru.example.com').subdomain()
+        >>> URL('http://ru.example.com').subdomain()
         'ru'
         """
         return self.host and self.host[:-len(self.pld())].strip('.') or ''
@@ -315,7 +374,7 @@ class URL:
         """
         Return the domain of the url.
 
-        >>> URL('ru.example.com').domain()
+        >>> URL('http://ru.example.com').domain()
         'example'
         """
         return self.host and self.pld()[:-len(self.tld())].strip('.') or ''
@@ -324,19 +383,19 @@ class URL:
         """
         Return the pay-level domain of the url.
 
-        >>> URL('ru.example.com').pld()
+        >>> URL('http://ru.example.com').pld()
         'example.com'
         """
-        return self.host and psl.privatesuffix(self.host) or ''
+        return self.host and PSL.privatesuffix(self.host) or ''
 
     def tld(self):
         """
         Return the top-level domain of a url.
 
-        >>> URL('example.com').tld()
+        >>> URL('http://example.com').tld()
         'com'
         """
-        return self.host and psl.publicsuffix(self.host) or ''
+        return self.host and PSL.publicsuffix(self.host) or ''
 
     # Port methods
     # ------------------------------------------------------------------------
@@ -370,7 +429,10 @@ class URL:
         >>> URL('http://example.com/a///////b///1/../c/d').abspath().to_str()
         'http://example.com/a/b/c/d'
         """
-        self.path = urllib.parse.urljoin(self.path, '.')
+        if not self.path.endswith('/'):
+            self.path = urllib.parse.urljoin(self.path + '/', '.').rstrip('/')
+        else:
+            self.path = urllib.parse.urljoin(self.path, '.')
         return self
 
     def set_path(self, path):
@@ -412,25 +474,32 @@ class URL:
     # Query params methods
     # ------------------------------------------------------------------------
 
-    def sort_query(self, _cmp=None):
+    def sort_query(self, key=None):
         """
         >>> URL('http://example.com?c=3&a=1&b=2').sort_query().to_str()
         'http://example.com?a=1&b=2&c=3'
         """
-        self.query.sort(_cmp)
+        self.query.sort(key)
         return self
+
+    def get_query(self, name):
+        """
+        >>> URL('http://example.com?a=1').get_query('a')
+        ['1']
+        """
+        return self.query.get(name)
 
     def set_query(self, mixed, value=None):
         """
         Add query params to this url.
 
-        >>> URL('http://example.com?x=2&x=3&b=0').set_query('x', 1).to_str()
-        'http://example.com?x=1'
+        >>> u = URL('http://example.com?x=2&x=3&b=0')
+        >>> u.set_query('x', 1).sort_query().to_str()
+        'http://example.com?b=0&x=1'
 
-        >>> (URL('http://example.com?x=2&x=3')
-        >>>     .set_query({'x': '1', 'a': ['1','2']})
-        >>>     .to_str())
-        'http://example.com?x=1&a=1&a=2&b=0'
+        >>> u = URL('http://example.com?x=2&x=3&b=0')
+        >>> u.set_query({'x': '1', 'a': ['1','2']}).sort_query().to_str()
+        'http://example.com?a=1&a=2&b=0&x=1'
         """
         if isinstance(mixed, dict):
             for pair in mixed.items():
@@ -439,23 +508,21 @@ class URL:
             self.query.set(mixed, value)
         return self
 
-    def add_query(self, mixed, value):
+    def add_query(self, mixed, value=None):
         """
         Add query params to this url.
 
-        >>> URL('http://example.com?x=2').set_query('x', 1).to_str()
+        >>> URL('http://example.com?x=1').add_query('x', 2).to_str()
         'http://example.com?x=1&x=2'
 
-        >>> (URL('http://example.com?x=2&x=3')
-        >>>     .set_query({'x': '1', 'b': '0'})
-        >>>     .to_str())
+        >>> URL('http://example.com?x=1&x=2').add_query({'x': '3', 'b': '0'}).to_str()
         'http://example.com?x=1&x=2&x=3&b=0'
         """
         if isinstance(mixed, dict):
             for pair in mixed.items():
                 self.query.add(*pair)
         else:
-            self.query.add(name, value)
+            self.query.add(mixed, value)
         return self
 
     def remove_query(self, mixed, value=None):
@@ -473,14 +540,12 @@ class URL:
             for pair in mixed.items():
                 self.query.remove(*pair)
         else:
-            self.query.remove(pair)
+            self.query.remove(mixed, value)
         return self
 
     def filter_query(self, predicate):
         """
-        >>> (URL('http://example.com?a=1&b=2&bc=1')
-        >>>     .filter_query(lambda k, v: v != '1')
-        >>>     .to_str())
+        >>> (URL('http://example.com?a=1&b=2&bc=1').filter_query(lambda k, v: v != '1').to_str())
         'http://example.com?b=2'
         """
         self.query.filter_by(predicate)
@@ -489,47 +554,80 @@ class URL:
     # Params methods
     # ------------------------------------------------------------------------
 
-    def sort_params(self, _cmp=None):
-        self.params.sort(_cmp)
+    def sort_params(self, key=None):
+        """
+        >>> URL('http://example.com/;c=3;a=1;b=2').sort_params().to_str()
+        'http://example.com/;a=1;b=2;c=3'
+        """
+        self.params.sort(key)
         return self
+
+    def get_param(self, name):
+        """
+        >>> URL('http://example.com/;a=1').get_param('a')
+        ['1']
+        """
+        return self.params.get(name)
 
     def set_params(self, mixed, value=None):
         """
-        Add params param to this url.
+        Add params params to this url.
 
-        >>> URL('http://example.com/;x=2;x=3').set_params('x', 1).to_str()
-        'http://example.com/;x=1'
+        >>> u = URL('http://example.com/;x=2;x=3;b=0')
+        >>> u.set_params('x', 1).sort_params().to_str()
+        'http://example.com/;b=0;x=1'
+
+        >>> u = URL('http://example.com/;x=2;x=3;b=0')
+        >>> u.set_params({'x': '1', 'a': ['1','2']}).sort_params().to_str()
+        'http://example.com/;a=1;a=2;b=0;x=1'
         """
         if isinstance(mixed, dict):
             for pair in mixed.items():
-                self.params.set(name, value)
+                self.params.set(*pair)
         else:
             self.params.set(mixed, value)
         return self
 
-    def add_params(self, mixed, value):
+    def add_params(self, mixed, value=None):
+        """
+        Add params params to this url.
+
+        >>> URL('http://example.com/;x=1').add_params('x', 2).to_str()
+        'http://example.com/;x=1;x=2'
+
+        >>> URL('http://example.com/;x=1;x=2').add_params({'x': '3', 'b': '0'}).to_str()
+        'http://example.com/;x=1;x=2;x=3;b=0'
+        """
         if isinstance(mixed, dict):
             for pair in mixed.items():
-                self.params.add(name, value)
+                self.params.add(*pair)
         else:
-            self.params.add(name, value)
+            self.params.add(mixed, value)
         return self
 
     def remove_params(self, mixed, value=None):
         """
         Remove the provided params parameter out of the url.
 
-        >>> URL('http://example.com/;x=1').remove_params('x', '1').to_str()
-        'http://example.com'
+        >>> URL('http://example.com/;x=1;x=2').remove_params('x', '1').to_str()
+        'http://example.com/;x=2'
+        >>> URL('http://example.com/;a=1;b=2').remove_params(['a', 'b']).to_str()
+        'http://example.com/'
+        >>> URL('http://example.com/;a=1;b=2').remove_params('a').to_str()
+        'http://example.com/;b=2'
         """
         if isinstance(mixed, dict):
             for pair in mixed.items():
                 self.params.remove(*pair)
         else:
-            self.params.remove(pair)
+            self.params.remove(mixed, value)
         return self
 
     def filter_params(self, predicate):
+        """
+        >>> (URL('http://example.com/;a=1;b=2;bc=1').filter_params(lambda k, v: v != '1').to_str())
+        'http://example.com/;b=2'
+        """
         self.params.filter_by(predicate)
         return self
 
@@ -543,7 +641,7 @@ class URL:
         >>> URL('http://example.com').set_frag('frag').to_str()
         'http://example.com#frag'
         """
-        sefl.fragment = frag
+        self.fragment = frag
         return self
 
     def remove_frag(self):
@@ -551,7 +649,7 @@ class URL:
         Remove the fragment from this url.
 
         >>> URL('http://example.com/#frag').remove_frag().to_str()
-        'http://example.com'
+        'http://example.com/'
         """
         self.fragment = ''
         return self
@@ -566,27 +664,36 @@ class URL:
 
     @staticmethod
     def percent_encode(raw, safe_chars):
+        """
+        >>> URL.percent_encode('привет мир!', safe=[])
+        'a'
+        """
         def replacement(match):
-            s = match.group(1)
-            if len(s) == 1:
-                return s if s in safe_chars else '%{:02X}'.format(ord(s))
+            raw_char = match.group(1)
+            if len(raw_char) == 1:
+                return raw_char if raw_char in safe_chars else '%{:02X}'.format(ord(raw_char))
             else:
                 # Replace any escaped entities with their equivalent if needed.
-                c = chr(int(match.group(2), 16))
-                if (c in safe_chars) and (c not in URL.RESERVED):
-                    return c
-                return s.upper()
+                char = chr(int(match.group(2), 16))
+                if (char in safe_chars) and (char not in URL.RESERVED):
+                    return char
+                return raw_char.upper()
         return URL.PERCENT_ESCAPING_RE.sub(replacement, raw)
 
-    def escape(self, strict=False):
+    def escape(self):
         """
         Make sure that the path is correctly escaped.
         """
         self.path = self.percent_encode(self.path, URL.PATH)
-        self.query = self.percent_encode(self.query, URL.QUERY)
-        self.params = self.percent_encode(self.params, URL.QUERY)
-        self.username = self.percent_encode(self.userinfo, URL.USERINFO)
+        self.username = self.percent_encode(self.username, URL.USERINFO)
         self.password = self.percent_encode(self.password, URL.USERINFO)
+
+        _query = self.percent_encode(self.query.to_str(), URL.QUERY)
+        self.query = _Params(_query)
+
+        _params = self.percent_encode(self.params.to_str(), URL.QUERY)
+        self.params = _Params(_params)
+
         return self
 
     def unescape(self):
@@ -594,8 +701,8 @@ class URL:
         Unescape the path.
         """
         self.path = urllib.parse.unquote(self.path)
-        self.query = urllib.parse.unquote(self.query)
-        self.params = urllib.parse.unquote(self.params)
+        self.query = _Params(urllib.parse.unquote(self.query.to_str()))
+        self.params = _Params(urllib.parse.unquote(self.params.to_str()))
         self.username = urllib.parse.unquote(self.username)
         self.password = urllib.parse.unquote(self.password)
         return self
@@ -633,18 +740,28 @@ class URL:
         """
         Return a unicode version of this url
         """
-        netloc = self._host or ''
-        if self._port:
-            netloc += (':' + str(self._port))
+        netloc = ''
 
-        if self._userinfo is not None:
-            netloc = '{}@{}'.format(self._userinfo, netloc)
+        if self.username:
+            netloc += self.username
 
-        result = urllib.parse.urlunparse((self._scheme, netloc,
-            self._path, self._params, self._query,
-            self._fragment))
+        if self.password:
+            netloc += ':' + self.password
+
+        if self.host:
+            netloc += (netloc and '@') + self.host
+
+        if self.port:
+            netloc += ':' + self.port
+
+        query = self.query.to_str()
+        params = self.params.to_str().replace('&', ';')
+
+        return urllib.parse.urlunparse((
+            self.scheme, netloc,
+            self.path, params, query,
+            self.fragment))
 
 
 if __name__ == "__main__":
-    import doctest
     doctest.testmod()
